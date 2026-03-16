@@ -1,6 +1,5 @@
 import logging
 import time
-
 import requests
 import pandas as pd
 
@@ -44,20 +43,37 @@ def _load_basket_ranges() -> list[tuple[int, int, str]]:
 _BASKET_RANGES: list[tuple[int, int, str]] = _load_basket_ranges()
 
 
+def _get_with_retry(url: str, *, retries: int = 3, backoff: float = 20.0) -> requests.Response | None:
+    """GET-запрос с повтором при 429. При каждой попытке пауза удваивается."""
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            if resp.status_code == 429:
+                wait = backoff * attempt
+                logger.warning("429 Too Many Requests — ждём %.0f сек (попытка %d/%d)", wait, attempt, retries)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.Timeout:
+            logger.warning("таймаут (попытка %d/%d): %s", attempt, retries, url)
+        except requests.exceptions.HTTPError as e:
+            logger.error("HTTP ошибка: %s", e)
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error("ошибка запроса: %s", e)
+            return None
+    logger.error("исчерпаны %d попытки для: %s", retries, url)
+    return None
+
+
 def fetch_search_page(query: str, page: int) -> list[dict]:
-    """Функция запрашивает одну страницу поиска и возвращает список товаров"""
+    """Запрашивает одну страницу поиска и возвращает список товаров."""
     url = _SEARCH_URL.format(dest=DEST, page=page, query=query)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        return resp.json().get("products", [])
-    except requests.exceptions.Timeout:
-        logger.warning("страница %d — таймаут, пропускаем", page)
-    except requests.exceptions.HTTPError as e:
-        logger.error("страница %d — HTTP ошибка: %s", page, e)
-    except requests.exceptions.RequestException as e:
-        logger.error("страница %d — ошибка запроса: %s", page, e)
-    return []
+    resp = _get_with_retry(url)
+    if resp is None:
+        return []
+    return resp.json().get("products", [])
 
 
 def _basket_host(nm_id: int) -> str:
@@ -88,29 +104,22 @@ def _card_json_url(nm_id: int) -> str:
 
 
 def fetch_card_detail(nm_id: int) -> dict:
-    """Запрашивает card.json с CDN и возвращает описание, характеристики, страну"""
+    """Запрашивает card.json с CDN и возвращает описание, характеристики, страну."""
     url = _card_json_url(nm_id)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        options: list[dict] = data.get("options", [])
-        country = next(
-            (o["value"] for o in options if "страна" in o.get("name", "").lower()),
-            None,
-        )
-        return {
-            "description": data.get("description", ""),
-            "options": options,
-            "country": country,
-        }
-    except requests.exceptions.Timeout:
-        logger.warning("card %d — таймаут", nm_id)
-    except requests.exceptions.HTTPError as e:
-        logger.error("card %d — HTTP ошибка: %s", nm_id, e)
-    except requests.exceptions.RequestException as e:
-        logger.error("card %d — ошибка запроса: %s", nm_id, e)
-    return {}
+    resp = _get_with_retry(url)
+    if resp is None:
+        return {}
+    data = resp.json()
+    options: list[dict] = data.get("options", [])
+    country = next(
+        (o["value"] for o in options if "страна" in o.get("name", "").lower()),
+        None,
+    )
+    return {
+        "description": data.get("description", ""),
+        "options": options,
+        "country": country,
+    }
 
 
 def build_record(raw: dict) -> dict:

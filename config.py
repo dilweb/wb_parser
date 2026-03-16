@@ -3,8 +3,8 @@ DEST = "-1257786" # регион (Москва)
 MAX_PAGES = 50
 DELAY = 0.5 # пауза между запросами в секундах
 
-OUTPUT_ALL = "catalog_all.xlsx"
-OUTPUT_FILTERED = "catalog_filtered.xlsx"
+OUTPUT_ALL = "results/catalog_all.xlsx"
+OUTPUT_FILTERED = "results/catalog_filtered.xlsx"
 
 FILTER_MIN_RATING = 4.5
 FILTER_MAX_PRICE = 10000

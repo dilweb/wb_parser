@@ -4,7 +4,11 @@ import time
 import requests
 import pandas as pd
 
-from config import DEST, HEADERS, MAX_PAGES, DELAY
+from config import (
+    DEST, HEADERS, MAX_PAGES, DELAY,
+    SEARCH_QUERY, OUTPUT_ALL, OUTPUT_FILTERED,
+    FILTER_MIN_RATING, FILTER_MAX_PRICE, FILTER_COUNTRY,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +61,7 @@ def fetch_search_page(query: str, page: int) -> list[dict]:
 
 
 def _basket_host(nm_id: int) -> str:
-    """Определяет номер basket-сервера по артикулу."""
+    """Определяет номер basket-сервера по артикулу"""
     vol = nm_id // 100_000
     for lo, hi, num in _BASKET_RANGES:
         if lo <= vol <= hi:
@@ -67,7 +71,7 @@ def _basket_host(nm_id: int) -> str:
 
 
 def build_image_urls(nm_id: int, pics: int) -> list[str]:
-    """Строит список URL изображений товара по артикулу и количеству фото."""
+    """Строит список URL изображений товара по артикулу и количеству фото"""
     vol = nm_id // 100_000
     part = nm_id // 1_000
     basket = _basket_host(nm_id)
@@ -76,7 +80,7 @@ def build_image_urls(nm_id: int, pics: int) -> list[str]:
 
 
 def _card_json_url(nm_id: int) -> str:
-    """Строит URL до card.json на CDN (тот же basket, что и картинки)."""
+    """Строит URL до card.json на CDN"""
     vol = nm_id // 100_000
     part = nm_id // 1_000
     basket = _basket_host(nm_id)
@@ -84,7 +88,7 @@ def _card_json_url(nm_id: int) -> str:
 
 
 def fetch_card_detail(nm_id: int) -> dict:
-    """Запрашивает card.json с CDN и возвращает описание, характеристики, страну."""
+    """Запрашивает card.json с CDN и возвращает описание, характеристики, страну"""
     url = _card_json_url(nm_id)
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -157,3 +161,53 @@ def collect_search_results(query: str) -> list[dict]:
         logger.info("страница %d — получено %d шт. (всего: %d)", page, len(products), len(all_products))
         time.sleep(DELAY)
     return all_products
+
+
+def collect_all_records(query: str) -> list[dict]:
+    """Собирает полные записи по всем товарам из поиска."""
+    raw_products = collect_search_results(query)
+    logger.info("начинаем обогащение карточек, товаров: %d", len(raw_products))
+    records = []
+    for i, raw in enumerate(raw_products, start=1):
+        try:
+            record = build_record(raw)
+            records.append(record)
+        except Exception as e:
+            logger.error("товар %d (id=%s) — ошибка сборки записи: %s", i, raw.get("id"), e)
+        if i % 50 == 0:
+            logger.info("обработано %d / %d", i, len(raw_products))
+    logger.info("готово: собрано %d записей", len(records))
+    return records
+
+
+def save_xlsx(records: list[dict], path: str) -> None:
+    """Сохраняет список записей в XLSX-файл."""
+    pd.DataFrame(records).to_excel(path, index=False)
+    logger.info("сохранено: %s (%d строк)", path, len(records))
+
+
+def apply_filter(records: list[dict]) -> list[dict]:
+    """Возвращает записи, удовлетворяющие критериям фильтрации."""
+    return [
+        r for r in records
+        if r["Рейтинг"] >= FILTER_MIN_RATING
+        and r["Цена"] <= FILTER_MAX_PRICE
+        and (r["Страна производства"] or "").strip().lower() == FILTER_COUNTRY.lower()
+    ]
+
+
+def main() -> None:
+    records = collect_all_records(SEARCH_QUERY)
+    if not records:
+        logger.warning("результаты пусты, файлы не созданы")
+        return
+    save_xlsx(records, OUTPUT_ALL)
+
+    filtered = apply_filter(records)
+    logger.info("отфильтровано: %d записей (рейтинг ≥ %.1f, цена ≤ %d, страна = %s)",
+                len(filtered), FILTER_MIN_RATING, FILTER_MAX_PRICE, FILTER_COUNTRY)
+    save_xlsx(filtered, OUTPUT_FILTERED)
+
+
+if __name__ == "__main__":
+    main()
